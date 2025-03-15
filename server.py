@@ -1,16 +1,22 @@
-from flask import Flask, request, jsonify
-import subprocess
+import os
+import json
 import requests
+import subprocess
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
+
+# Global context for session state
 GLOBAL_CONTEXT = {}
 
-# --- Tool Functions ---
+# ------------------------------
+# Tool Functions
+# ------------------------------
 
 def generate_code(params, context):
     description = params.get("description", "No description provided")
     language = params.get("language", "Python")
-    code = f"# {language} code generated for: {description}\ndef example():\n    pass"
+    code = f"# {language} code generated for: {description}\ndef generated_function():\n    pass"
     context["last_generated_code"] = code
     return code, context
 
@@ -51,7 +57,6 @@ def execute_command(params, context):
     if not command:
         return "No command provided.", context
     try:
-        # Run the command locally (caution: use with trusted input)
         output = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT, timeout=10)
         result = output.decode('utf-8')
     except Exception as e:
@@ -59,7 +64,49 @@ def execute_command(params, context):
     context["last_command_output"] = result
     return result, context
 
-# --- Tool Registry ---
+def get_latest_commit(owner, repo):
+    """
+    Fetches the latest commit from the specified GitHub repository using the REST API.
+    """
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise Exception("GITHUB_TOKEN is not set in your environment.")
+    
+    url = f"https://api.github.com/repos/{owner}/{repo}/commits"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code != 200:
+        return {"error": f"GitHub API error {response.status_code}: {response.text}"}
+    
+    commits = response.json()
+    if not commits:
+        return {"error": "No commits found."}
+    
+    latest = commits[0]
+    return {
+        "sha": latest.get("sha", ""),
+        "message": latest.get("commit", {}).get("message", ""),
+        "author": latest.get("commit", {}).get("author", {}).get("name", "")
+    }
+
+def latest_commit_tool(params, context):
+    """
+    Uses the GitHub REST API to fetch the latest commit.
+    """
+    owner = params.get("owner", "Linkan4242")
+    repo = params.get("repo", "mcp")
+    result = get_latest_commit(owner, repo)
+    context["latest_commit"] = result
+    return result, context
+
+# ------------------------------
+# Tool Registry
+# ------------------------------
+
 TOOLS = {
     "code_generation": {
         "name": "Code Generation",
@@ -102,10 +149,19 @@ TOOLS = {
         "description": "Execute a local shell command.",
         "parameters": {"command": "string"},
         "function": execute_command
+    },
+    "latest_commit": {
+        "name": "Fetch Latest Commit",
+        "description": "Fetch the latest commit from a GitHub repository using the REST API.",
+        "parameters": {"owner": "string", "repo": "string"},
+        "function": latest_commit_tool
     }
 }
 
-# --- API Endpoint ---
+# ------------------------------
+# MCP Server Endpoint
+# ------------------------------
+
 @app.route('/mcp', methods=['POST'])
 def mcp_handler():
     data = request.get_json()
@@ -142,4 +198,4 @@ def mcp_handler():
         return jsonify({"status": "error", "message": "Invalid command."}), 400
 
 if __name__ == '__main__':
-    app.run(port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
